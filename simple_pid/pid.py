@@ -1,3 +1,6 @@
+import math
+
+
 def _clamp(value, limits):
     lower, upper = limits
     if value is None:
@@ -26,6 +29,7 @@ class PID(object):
         error_map=None,
         time_fn=None,
         starting_output=0.0,
+        derivative_filter_tau=0.0,
     ):
         """
         Initialize a new PID controller.
@@ -59,6 +63,10 @@ class PID(object):
             a system that is already at the setpoint, you can set this to your best guess at what
             output the PID should give when first calling it to avoid the PID outputting zero and
             moving the system away from the setpoint.
+        :param derivative_filter_tau: Time constant in seconds of a first-order low-pass filter
+            on the derivative term. Must be finite and nonnegative. The default, 0, disables
+            filtering. Larger values smooth noise more but introduce more lag. Applies to both
+            differential-on-measurement and differential-on-error.
         """
         self.Kp, self.Ki, self.Kd = Kp, Ki, Kd
         self.setpoint = setpoint
@@ -69,6 +77,7 @@ class PID(object):
         self.proportional_on_measurement = proportional_on_measurement
         self.differential_on_measurement = differential_on_measurement
         self.error_map = error_map
+        self.derivative_filter_tau = derivative_filter_tau
 
         self._proportional = 0
         self._integral = 0
@@ -144,9 +153,20 @@ class PID(object):
         self._integral = _clamp(self._integral, self.output_limits)  # Avoid integral windup
 
         if self.differential_on_measurement:
-            self._derivative = -self.Kd * d_input / dt
+            derivative_delta = -self.Kd * d_input
         else:
-            self._derivative = self.Kd * d_error / dt
+            derivative_delta = self.Kd * d_error
+
+        if self.derivative_filter_tau > 0:
+            # Backward Euler low-pass filter, using the actual update interval.
+            # Combine filtering and differentiation to avoid dividing by a tiny dt first.
+            denominator = self.derivative_filter_tau + dt
+            self._derivative = (
+                self.derivative_filter_tau / denominator * self._derivative
+                + derivative_delta / denominator
+            )
+        else:
+            self._derivative = derivative_delta / dt
 
         # Compute final output
         output = self._proportional + self._integral + self._derivative
@@ -168,9 +188,22 @@ class PID(object):
             'output_limits={self.output_limits!r}, auto_mode={self.auto_mode!r}, '
             'proportional_on_measurement={self.proportional_on_measurement!r}, '
             'differential_on_measurement={self.differential_on_measurement!r}, '
-            'error_map={self.error_map!r}'
+            'error_map={self.error_map!r}, '
+            'derivative_filter_tau={self.derivative_filter_tau!r}'
             ')'
         ).format(self=self)
+
+    @property
+    def derivative_filter_tau(self):
+        """Derivative filter time constant in seconds; 0 disables filtering."""
+        return self._derivative_filter_tau
+
+    @derivative_filter_tau.setter
+    def derivative_filter_tau(self, value):
+        """Set a finite, nonnegative derivative filter time constant."""
+        if not math.isfinite(value) or value < 0:
+            raise ValueError('derivative_filter_tau must be finite and nonnegative')
+        self._derivative_filter_tau = value
 
     @property
     def components(self):

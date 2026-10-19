@@ -126,6 +126,34 @@ pid.differential_on_measurement = False
 ```
 
 
+### Derivative filtering
+
+Differentiation amplifies measurement noise. To smooth the derivative term, set
+`derivative_filter_tau` to a positive time constant in seconds:
+
+```python
+pid = PID(1, 0.1, 0.05, setpoint=1, derivative_filter_tau=0.1)
+```
+
+This enables a first-order IIR low-pass filter. Larger time constants give more smoothing
+but add more lag to the derivative response, so the controller may need retuning. The
+default is `0`, which disables filtering and preserves the unfiltered behavior. The time
+constant must be finite and nonnegative, and can also be changed while the PID is running
+using `pid.derivative_filter_tau`.
+
+The filter uses the actual time between updates (or the explicit `dt` argument), including
+when the update interval varies. With time constant `tau`, it uses the backward Euler update:
+
+```text
+D = (tau / (tau + dt)) * previous_D + (dt / (tau + dt)) * raw_D
+```
+
+Filtering applies to both differential-on-measurement and differential-on-error. It leaves
+the proportional and integral terms unchanged, and `pid.components` reports the filtered
+D-term. The filter starts at zero and is cleared by `reset()` or when returning to auto mode.
+Calls that skip an update because of `sample_time` or manual mode leave the filter unchanged.
+
+
 ### Error mapping
 
 To transform the error value to another domain before doing any computations on it, you can supply an `error_map` callback function to the PID. The callback function should take one argument which is the error from the setpoint. This can be used e.g. to get a degree value error in a yaw angle control with values between `[-pi, pi)`:

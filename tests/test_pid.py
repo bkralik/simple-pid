@@ -81,6 +81,114 @@ def test_D_negative_setpoint():
     assert round(pid(-15)) == 10
 
 
+@pytest.mark.parametrize('on_measurement', [True, False])
+@pytest.mark.parametrize('gain', [2, -2])
+def test_derivative_filter_response(on_measurement, gain):
+    pid = PID(
+        0,
+        0,
+        gain,
+        sample_time=None,
+        derivative_filter_tau=0.5,
+        differential_on_measurement=on_measurement,
+    )
+    assert pid(10, dt=0.1) == 0  # No derivative kick on the first input
+
+    # A step produces a smaller peak than the raw derivative (-gain / 0.5).
+    assert pid(11, dt=0.5) == pytest.approx(-gain)
+    assert pid.components[2] == pytest.approx(-gain)
+    # A constant input lets the filter decay, using each actual timestep.
+    assert pid(11, dt=0.5) == pytest.approx(-gain / 2)
+    assert pid(11, dt=1.5) == pytest.approx(-gain / 8)
+
+
+@pytest.mark.parametrize('on_measurement, expected', [(True, 0), (False, 4)])
+def test_derivative_filter_setpoint_change(on_measurement, expected):
+    pid = PID(
+        0,
+        0,
+        2,
+        sample_time=None,
+        derivative_filter_tau=0.5,
+        differential_on_measurement=on_measurement,
+    )
+    pid(0, dt=0.5)
+    pid.setpoint = 2
+    assert pid(0, dt=0.5) == pytest.approx(expected)
+
+
+def test_derivative_filter_noise_attenuation():
+    raw = PID(0, 0, 1, sample_time=None)
+    filtered = PID(0, 0, 1, sample_time=None, derivative_filter_tau=0.1)
+    raw_outputs, filtered_outputs = [], []
+    for input_ in [1, -1] * 50:
+        raw_outputs.append(raw(input_, dt=0.01))
+        filtered_outputs.append(filtered(input_, dt=0.01))
+    assert max(map(abs, filtered_outputs)) < max(map(abs, raw_outputs)) / 10
+
+
+def test_derivative_filter_disabled():
+    default = PID(1, 2, 3, sample_time=None)
+    disabled = PID(1, 2, 3, sample_time=None, derivative_filter_tau=0)
+    filtered = PID(1, 2, 3, sample_time=None, derivative_filter_tau=0.5)
+    for input_, dt in [(10, 0.1), (11, 0.5), (9, 0.2), (9, 1)]:
+        assert default(input_, dt=dt) == disabled(input_, dt=dt)
+        filtered(input_, dt=dt)
+        assert default.components == disabled.components
+        assert filtered.components[:2] == default.components[:2]
+    # Disabling filtering while running immediately uses the raw derivative.
+    filtered.derivative_filter_tau = 0
+    assert filtered(8, dt=0.5) == default(8, dt=0.5)
+
+
+def test_derivative_filter_sample_time_and_clock():
+    now = 0.0
+    pid = PID(0, 0, 2, sample_time=0.5, time_fn=lambda: now, derivative_filter_tau=0.5)
+    assert pid(10) == 0
+    now = 0.5
+    assert pid(11) == pytest.approx(-2)
+    now = 0.75
+    assert pid(100) == pytest.approx(-2)  # Skipped input must not affect the filter
+    now = 1.0
+    assert pid(11) == pytest.approx(-1)
+
+
+@pytest.mark.parametrize('auto_mode_reset', [True, False])
+def test_derivative_filter_reset(auto_mode_reset):
+    pid = PID(0, 0, 2, sample_time=None, derivative_filter_tau=0.5)
+    pid(10, dt=0.5)
+    assert pid(11, dt=0.5) == pytest.approx(-2)
+    if auto_mode_reset:
+        pid.auto_mode = False
+        assert pid(100, dt=0.5) == pytest.approx(-2)
+        assert pid.components[2] == pytest.approx(-2)
+        pid.auto_mode = True
+    else:
+        pid.reset()
+    assert pid.components[2] == 0
+    assert pid.derivative_filter_tau == 0.5
+    assert pid(100, dt=0.5) == 0
+    assert pid(101, dt=0.5) == pytest.approx(-2)
+
+
+def test_derivative_filter_output_limits():
+    pid = PID(0, 0, 2, sample_time=None, derivative_filter_tau=0.5, output_limits=(-1, 1))
+    assert pid(10, dt=0.5) == 0
+    assert pid(11, dt=0.5) == -1
+    assert pid.components[2] == pytest.approx(-2)
+    assert pid(11, dt=0.5) == pytest.approx(-1)
+
+
+@pytest.mark.parametrize('tau', [-1, float('nan'), float('inf'), -float('inf')])
+def test_derivative_filter_invalid_tau(tau):
+    with pytest.raises(ValueError, match='derivative_filter_tau'):
+        PID(derivative_filter_tau=tau)
+    pid = PID(derivative_filter_tau=0.5)
+    with pytest.raises(ValueError, match='derivative_filter_tau'):
+        pid.derivative_filter_tau = tau
+    assert pid.derivative_filter_tau == 0.5
+
+
 def test_desired_state():
     pid = PID(10, 5, 2, setpoint=10, sample_time=None)
 
@@ -226,13 +334,14 @@ def test_clamp():
 
 
 def test_repr():
-    pid = PID(1, 2, 3, setpoint=10)
+    pid = PID(1, 2, 3, setpoint=10, derivative_filter_tau=0.5)
     new_pid = eval(repr(pid))
 
     assert new_pid.Kp == 1
     assert new_pid.Ki == 2
     assert new_pid.Kd == 3
     assert new_pid.setpoint == 10
+    assert new_pid.derivative_filter_tau == 0.5
 
 
 def test_converge_system():
